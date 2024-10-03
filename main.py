@@ -39,8 +39,8 @@ class DisplayManager:
         max_window_width = pygame.display.get_desktop_sizes()[0][0]
 
         # Calculate the new width for each image
-        total_images = self.grid_size[1] + 1
-        max_image_width = max_window_width // total_images
+        total_images = self.grid_size[0] * self.grid_size[1]  # Total images = rows * columns
+        max_image_width = max_window_width // self.grid_size[1]  # Width for each column
         new_image_width = min(original_image_width, max_image_width)
 
         # Ensure height scaling proportionally
@@ -48,7 +48,7 @@ class DisplayManager:
         new_image_height = int(original_image_height * scale_factor)
         print(f'New Image Dim : {new_image_width, new_image_height}')
 
-        window_size = (new_image_width * total_images, new_image_height)
+        window_size = (new_image_width * self.grid_size[1], new_image_height * self.grid_size[0])  # Adjusted for two rows
 
         return window_size
 
@@ -57,16 +57,24 @@ class DisplayManager:
             return
 
         for s in self.sensor_list:
-            if s.surface is None:
+            if s.surface is None or s.display_pos is None:
                 continue
 
             offset = self.get_display_offset(s.display_pos)
             # Scale the surface
             w, h = self.get_window_size()
-            scaled_surface = pygame.transform.scale(s.surface, (w // 3, h))
+            scaled_surface = pygame.transform.scale(s.surface, (w // self.grid_size[1], h // self.grid_size[0]))  # Adjusted for scaling
             self.display.blit(scaled_surface, offset)
 
         pygame.display.flip()
+
+    def get_display_offset(self, display_pos):
+        # Calculate the offset based on the grid position
+        row, col = display_pos
+        new_image_width = self.window_size[0] // self.grid_size[1]
+        new_image_height = self.window_size[1] // self.grid_size[0]
+
+        return col * new_image_width, row * new_image_height
 
     def get_window_size(self):
         return [int(self.window_size[0]), int(self.window_size[1])]
@@ -77,9 +85,9 @@ class DisplayManager:
             int(self.window_size[1] / self.grid_size[0])
         ]
 
-    def get_display_offset(self, display_pos):
-        dis_size = self.get_display_size()
-        return [int(display_pos[1] * dis_size[0]), int(display_pos[0] * dis_size[1])]
+    # def get_display_offset(self, display_pos):
+    #     dis_size = self.get_display_size()
+    #     return [int(display_pos[1] * dis_size[0]), int(display_pos[0] * dis_size[1])]
 
     def add_sensor(self, sensor):
         self.sensor_list.append(sensor)
@@ -108,7 +116,7 @@ class SensorDevice:
         self.sensor_options = sensor_options
         self.data = self.init_sensor_data(sensor_type)
 
-        self.display_pos: Tuple[int] = display_pos
+        self.display_pos: Tuple[int] | None = display_pos
         self.surface = None
 
         client: CarlaClient = client_weak_self()
@@ -119,7 +127,7 @@ class SensorDevice:
         if sensor_type == 'sensor.camera.rgb':
             return np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 4))
         elif sensor_type == 'sensor.lidar.ray_cast':
-            return None
+            return np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 4))
         elif sensor_type == 'gnss':
             return [0, 0]
         elif sensor_type == 'imu':
@@ -207,7 +215,10 @@ class SensorDevice:
 
 class EgoCar:
     def __init__(self):
-        self.rgb_camera: SensorDevice | None = None
+        self.rgb_camera_front: SensorDevice | None = None
+        self.rgb_camera_left: SensorDevice | None = None
+        self.rgb_camera_right: SensorDevice | None = None
+        self.rgb_camera_rear: SensorDevice | None = None
         self.lidar_sensor: SensorDevice | None = None
 
         self.actor = None
@@ -228,41 +239,49 @@ class EgoCar:
         self.actor = client.world.spawn_actor(bp, spawn_point)
 
     def _setup_sensors(self, client_weak_self):
-        self.rgb_camera_fc = SensorDevice(
+        self.rgb_camera_front = SensorDevice(
             client_weak_self,
             'sensor.camera.rgb',
-            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=+00)),
+            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=0)),
             sensor_options={},
             display_pos=[0, 1]
         )
 
-        self.rgb_camera_lc = SensorDevice(
+        self.rgb_camera_left = SensorDevice(
             client_weak_self,
             'sensor.camera.rgb',
-            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=-90)),
+            carla.Transform(carla.Location(x=0, y=-1.0, z=2.1), carla.Rotation(yaw=-90)),
             sensor_options={},
             display_pos=[0, 0]
         )
 
-        self.rgb_camera_rc = SensorDevice(
+        self.rgb_camera_right = SensorDevice(
             client_weak_self,
             'sensor.camera.rgb',
-            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=+90)),
+            carla.Transform(carla.Location(x=0, y=1.0, z=2.1), carla.Rotation(yaw=90)),
             sensor_options={},
             display_pos=[0, 2]
+        )
+
+        self.rgb_camera_rear = SensorDevice(
+            client_weak_self,
+            'sensor.camera.rgb',
+            carla.Transform(carla.Location(x=-1.5, z=2.1), carla.Rotation(yaw=180)),
+            sensor_options={},
+            display_pos=[1, 1]
         )
 
         # self.lidar_sensor = SensorDevice(
         #     client_weak_self,
         #     'sensor.lidar.ray_cast',
-        #     carla.Transform(carla.Location(x=0, z=2.4)),
+        #     carla.Transform(carla.Location(z=2.5), carla.Rotation(pitch=-15, yaw=90)),
         #     sensor_options={
         #         'channels': '64',
         #         'range': '100',
-        #         'points_per_second': '250000',
+        #         'points_per_second': '56000',
         #         'rotation_frequency': '20'
         #     },
-        #     display_pos=[0, 1]
+        #     display_pos=[1, 2]
         # )
 
     def cleanup(self):
@@ -339,7 +358,7 @@ class CarlaClient:
         """
 
         self.display_manager = DisplayManager(
-            grid_size=[1, 3],  # rows, cols
+            grid_size=[2, 3],  # rows, cols
         )
 
         """
