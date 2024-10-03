@@ -4,4 +4,7 @@
     <option name="sdkName" value="Python 3.12 (carla_driver)" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="carla" project-jdk-type="Python SDK" />
+  <component name="PythonCompatibilityInspectionAdvertiser">
+    <option name="version" value="3" />
+  </component>
 </project>

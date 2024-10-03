@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import carla
 import pygame
 import numpy as np
@@ -5,7 +7,7 @@ import random
 import weakref
 
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from pygame.locals import K_ESCAPE, K_SPACE
 from pygame.locals import K_a, K_d, K_s, K_w
 
@@ -22,93 +24,201 @@ class DriverConfig:
 config = DriverConfig()
 
 
-class SensorData:
-    def __init__(self):
-        self.rgb_image: np.array = np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 4))
-        self.depth_image: np.array = np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 4))
+class DisplayManager:
+    def __init__(self, grid_size):
+        self.grid_size = grid_size
+        self.window_size = self.init_window_size()
+        self.display = pygame.display.set_mode(self.window_size, pygame.HWSURFACE | pygame.DOUBLEBUF)
+        self.sensor_list = []
 
-        self.gnss: List[int] = [0, 0]
+    def init_window_size(self):
+        original_image_width, original_image_height = config.IMAGE_WIDTH, config.IMAGE_HEIGHT
+        print(f'Original Image Dim : {original_image_width, original_image_height}')
 
-        # noinspection PyArgumentList
-        self.imu: Dict[str, Any] = {
-            'gyro': carla.Vector3D(),
-            'accel': carla.Vector3D(),
-            'compass': 0
-        }
+        # Primary monitor
+        max_window_width = pygame.display.get_desktop_sizes()[0][0]
+
+        # Calculate the new width for each image
+        total_images = self.grid_size[1] + 1
+        max_image_width = max_window_width // total_images
+        new_image_width = min(original_image_width, max_image_width)
+
+        # Ensure height scaling proportionally
+        scale_factor = new_image_width / original_image_width
+        new_image_height = int(original_image_height * scale_factor)
+        print(f'New Image Dim : {new_image_width, new_image_height}')
+
+        window_size = (new_image_width * total_images, new_image_height)
+
+        return window_size
+
+    def render(self):
+        if not self.render_enabled():
+            return
+
+        for s in self.sensor_list:
+            if s.surface is None:
+                continue
+
+            offset = self.get_display_offset(s.display_pos)
+            # Scale the surface
+            w, h = self.get_window_size()
+            scaled_surface = pygame.transform.scale(s.surface, (w // 3, h))
+            self.display.blit(scaled_surface, offset)
+
+        pygame.display.flip()
+
+    def get_window_size(self):
+        return [int(self.window_size[0]), int(self.window_size[1])]
+
+    def get_display_size(self):
+        return [
+            int(self.window_size[0] / self.grid_size[1]),
+            int(self.window_size[1] / self.grid_size[0])
+        ]
+
+    def get_display_offset(self, display_pos):
+        dis_size = self.get_display_size()
+        return [int(display_pos[1] * dis_size[0]), int(display_pos[0] * dis_size[1])]
+
+    def add_sensor(self, sensor):
+        self.sensor_list.append(sensor)
+
+    def get_sensor_list(self):
+        return self.sensor_list
+
+    def render_enabled(self):
+        return self.display is not None
+
+    def cleanup(self):
+        for s in self.sensor_list:
+            s.cleanup()
 
 
-class SensorDevices:
-    def __init__(self):
-        self.rgb_camera = None
-        self.depth_camera = None
-        self.gnss_sensor = None
-        self.imu_sensor = None
+class SensorDevice:
+    def __init__(self, client_weak_self, sensor_type, spawn_point, sensor_options, display_pos):
+        self.client_weak_self = client_weak_self
 
-    # noinspection PyArgumentList
-    def setup(self, client_weak_self):
+        self.sensor = self.init_sensor(
+            sensor_type,
+            spawn_point,
+            sensor_options
+        )
+
+        self.sensor_options = sensor_options
+        self.data = self.init_sensor_data(sensor_type)
+
+        self.display_pos: Tuple[int] = display_pos
+        self.surface = None
+
         client: CarlaClient = client_weak_self()
-        bp_lib = client.world.get_blueprint_library()
-
-        self.rgb_camera = self.setup_sensor(
-            client_weak_self,
-            bp_lib,
-            'sensor.camera.rgb',
-            carla.Transform(carla.Location(x=1.5, z=2.1))
-        )
-
-        self.depth_camera = self.setup_sensor(
-            client_weak_self,
-            bp_lib,
-            'sensor.camera.depth',
-            carla.Transform(carla.Location(x=1.5, z=2.1))
-        )
-
-        self.gnss_sensor = self.setup_sensor(
-            client_weak_self,
-            bp_lib,
-            'sensor.other.gnss',
-            carla.Transform()
-        )
-
-        self.imu_sensor = self.setup_sensor(
-            client_weak_self,
-            bp_lib,
-            'sensor.other.imu',
-            carla.Transform()
-        )
+        client.display_manager.add_sensor(self)
 
     @staticmethod
-    def setup_sensor(client_weak_self, bp_lib, sensor_type, spawn_point):
-        client: CarlaClient = client_weak_self()
-        sensor_bp = bp_lib.find(sensor_type)
-        sensor = client.world.spawn_actor(sensor_bp, spawn_point, attach_to=client.car.actor)
+    def init_sensor_data(sensor_type):
+        if sensor_type == 'sensor.camera.rgb':
+            return np.zeros((config.IMAGE_HEIGHT, config.IMAGE_WIDTH, 4))
+        elif sensor_type == 'sensor.lidar.ray_cast':
+            return None
+        elif sensor_type == 'gnss':
+            return [0, 0]
+        elif sensor_type == 'imu':
+            return {
+                'gyro': carla.Vector3D(),
+                'accel': carla.Vector3D(),
+                'compass': 0
+            }
 
-        if sensor_type == 'qqsensor.camera.rgb':
-            sensor.set_attribute('image_size_x', f'{config.IMAGE_WIDTH}')
-            sensor.set_attribute('image_size_y', f'{config.IMAGE_HEIGHT}')
-            sensor.set_attribute('fov', f'{config.IMAGE_FOV}')
+    def init_sensor(self, sensor_type, spawn_point, sensor_options):
+        client: CarlaClient = self.client_weak_self()
+        sensor_bp = client.world.get_blueprint_library().find(sensor_type)
+
+        sensor = None
+
+        if sensor_type == 'sensor.camera.rgb':
+            sensor_bp.set_attribute('image_size_x', f'{config.IMAGE_WIDTH}')
+            sensor_bp.set_attribute('image_size_y', f'{config.IMAGE_HEIGHT}')
+            sensor_bp.set_attribute('fov', f'{config.IMAGE_FOV}')
+
+            sensor = client.world.spawn_actor(sensor_bp, spawn_point, attach_to=client.car.actor)
+            sensor.listen(self.rgb_callback)
+
+        elif sensor_type == 'sensor.lidar.ray_cast':
+            sensor_bp.set_attribute('range', '100')
+            sensor_bp.set_attribute('dropoff_general_rate', sensor_bp.get_attribute('dropoff_general_rate').recommended_values[0])
+            sensor_bp.set_attribute('dropoff_intensity_limit', sensor_bp.get_attribute('dropoff_intensity_limit').recommended_values[0])
+            sensor_bp.set_attribute('dropoff_zero_intensity', sensor_bp.get_attribute('dropoff_zero_intensity').recommended_values[0])
+
+            sensor = client.world.spawn_actor(sensor_bp, spawn_point, attach_to=client.car.actor)
+            sensor.listen(self.lidar_callback)
+
+        if sensor is None:
+            return None
+
+        for key in sensor_options:
+            sensor_bp.set_attribute(key, sensor_options[key])
 
         return sensor
 
+    """
+    Sensor Callbacks
+    """
+
+    def rgb_callback(self, image):
+        client: CarlaClient = self.client_weak_self()
+
+        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+        array = np.reshape(array, (image.height, image.width, 4))
+        array = array[:, :, :3]
+        array = array[:, :, ::-1]
+
+        if client.display_manager.render_enabled():
+            self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+
+    def lidar_callback(self, image):
+        client: CarlaClient = self.client_weak_self()
+
+        disp_size = client.display_manager.get_display_size()
+
+        lidar_range = 2.0 * float(self.sensor_options['range'])
+
+        points = np.frombuffer(image.raw_data, dtype=np.dtype('f4'))
+        points = np.reshape(points, (int(points.shape[0] / 4), 4))
+
+        lidar_data = np.array(points[:, :2])
+        lidar_data *= min(disp_size) / lidar_range
+        lidar_data += (0.5 * disp_size[0], 0.5 * disp_size[1])
+        lidar_data = np.fabs(lidar_data)  # pylint: disable=E1111
+        lidar_data = lidar_data.astype(np.int32)
+        lidar_data = np.reshape(lidar_data, (-1, 2))
+
+        lidar_img_size = (disp_size[0], disp_size[1], 3)
+        lidar_img = np.zeros(lidar_img_size, dtype=np.uint8)
+
+        lidar_img[tuple(lidar_data.T)] = (255, 255, 255)
+
+        if client.display_manager.render_enabled():
+            self.surface = pygame.surfarray.make_surface(lidar_img)
+
     def cleanup(self):
-        for sensor in [self.rgb_camera, self.depth_camera, self.gnss_sensor, self.imu_sensor]:
-            if sensor is not None:
-                sensor.destroy()
+        if self.sensor is not None:
+            self.sensor.destroy()
 
 
 class EgoCar:
     def __init__(self):
-        self.sensor_devices = SensorDevices()
-        self.sensor_data = SensorData()
+        self.rgb_camera: SensorDevice | None = None
+        self.lidar_sensor: SensorDevice | None = None
+
         self.actor = None
 
     def setup(self, client_weak_self):
+        self._setup_actor(client_weak_self)
+        self._setup_sensors(client_weak_self)
+
+    def _setup_actor(self, client_weak_self):
         client: CarlaClient = client_weak_self()
         bp = client.world.get_blueprint_library().filter('vehicle.audi.tt')[0]
-
-        """
-        Setup Car Actor 
-        """
 
         if bp.has_attribute('color'):
             color = random.choice(bp.get_attribute('color').recommended_values)
@@ -117,53 +227,47 @@ class EgoCar:
         spawn_point = random.choice(client.world.get_map().get_spawn_points())
         self.actor = client.world.spawn_actor(bp, spawn_point)
 
-        """
-        Setup Sensors
-        """
+    def _setup_sensors(self, client_weak_self):
+        self.rgb_camera_fc = SensorDevice(
+            client_weak_self,
+            'sensor.camera.rgb',
+            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=+00)),
+            sensor_options={},
+            display_pos=[0, 1]
+        )
 
-        self.sensor_devices.setup(client_weak_self)
-        self.sensor_devices.rgb_camera.listen(lambda image: self.rgb_callback(client_weak_self, image))
-        self.sensor_devices.depth_camera.listen(lambda image: self.depth_callback(image))
-        self.sensor_devices.gnss_sensor.listen(lambda data: self.gnss_callback(data))
-        self.sensor_devices.imu_sensor.listen(lambda data: self.imu_callback(data))
+        self.rgb_camera_lc = SensorDevice(
+            client_weak_self,
+            'sensor.camera.rgb',
+            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=-90)),
+            sensor_options={},
+            display_pos=[0, 0]
+        )
+
+        self.rgb_camera_rc = SensorDevice(
+            client_weak_self,
+            'sensor.camera.rgb',
+            carla.Transform(carla.Location(x=1.5, z=2.1), carla.Rotation(yaw=+90)),
+            sensor_options={},
+            display_pos=[0, 2]
+        )
+
+        # self.lidar_sensor = SensorDevice(
+        #     client_weak_self,
+        #     'sensor.lidar.ray_cast',
+        #     carla.Transform(carla.Location(x=0, z=2.4)),
+        #     sensor_options={
+        #         'channels': '64',
+        #         'range': '100',
+        #         'points_per_second': '250000',
+        #         'rotation_frequency': '20'
+        #     },
+        #     display_pos=[0, 1]
+        # )
 
     def cleanup(self):
-        self.sensor_devices.cleanup()
-
         if self.actor is not None:
             self.actor.destroy()
-
-    """
-    Sensor Callbacks
-    """
-
-    def rgb_callback(self, client_weak_self, image):
-        client: CarlaClient = client_weak_self()
-
-        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-        array = np.reshape(array, (image.height, image.width, 4))
-        array = array[:, :, :3]
-        array = array[:, :, ::-1]
-
-        self.sensor_data.rgb_image = array
-
-        if client.capture:
-            client.image = array
-            client.capture = False
-
-    def depth_callback(self, image):
-        image.convert(carla.ColorConverter.LogarithmicDepth)
-        self.sensor_data.depth_image = np.reshape(image.raw_data, (image.height, image.width, 4))
-
-    def gnss_callback(self, data):
-        self.sensor_data.gnss = [data.latitude, data.longitude]
-
-    def imu_callback(self, data):
-        self.sensor_data.imu = {
-            'gyro': data.gyroscope,
-            'accel': data.accelerometer,
-            'compass': data.compass
-        }
 
 
 class CarlaClient:
@@ -171,10 +275,7 @@ class CarlaClient:
         self.client = None
         self.world = None
         self.car = EgoCar()
-
-        self.display = None
-        self.image = None
-        self.capture = True
+        self.display_manager: DisplayManager | None = None
 
     """
     Manual Control
@@ -208,68 +309,13 @@ class CarlaClient:
             control.steer = 0
 
     """
-    Render
-    """
-
-    def draw_rectangle(self):
-        rect_color = (255, 0, 0)  # Red color (RGB)
-        rect_size = (200, 100)    # Width and height of the rectangle
-        rect_thickness = 2        # Border thickness
-
-        screen_center_x = config.IMAGE_WIDTH // 2
-        screen_center_y = config.IMAGE_HEIGHT // 2
-
-        # rect_position = (50, 50)  # Top-left corner of the rectangle (x, y)
-
-        rect_position = (
-            screen_center_x - rect_size[0] // 2,  # x position
-            screen_center_y - rect_size[1] // 2   # y position
-        )
-
-        pygame.draw.rect(
-            self.display,
-            rect_color,
-            (*rect_position, *rect_size),
-            rect_thickness
-        )
-
-    def render(self):
-        if self.image is None:
-            return
-
-        surface = pygame.surfarray.make_surface(
-            self.car.sensor_data.rgb_image.swapaxes(0, 1)
-        )
-
-        self.display.blit(surface, (0, 0))
-        self.draw_rectangle()
-
-    """
     Game Loop
     """
 
     def __enter__(self):
-        self.initialize_game()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.cleanup()
-
-    def initialize_game(self):
         pygame.init()
-
-        """
-        PyGame Window Settings  
-        """
-
+        pygame.font.init()
         pygame.display.set_caption("CARLA Driver")
-
-        self.display = pygame.display.set_mode(
-            (config.IMAGE_WIDTH, config.IMAGE_HEIGHT),
-            pygame.HWSURFACE | pygame.DOUBLEBUF
-        )
-
-        assert self.display is not None
 
         """
         Client
@@ -280,17 +326,39 @@ class CarlaClient:
         self.client.set_timeout(10.0)
 
         """
-        World & Car
+        World
         """
 
-        # noinspection PyArgumentList
         self.world = self.client.get_world()
         assert self.world is not None
 
         self.set_synchronous_mode(True)
 
+        """
+        Display Manager
+        """
+
+        self.display_manager = DisplayManager(
+            grid_size=[1, 3],  # rows, cols
+        )
+
+        """
+        Car
+        """
+
         client_weak_self = weakref.ref(self)
         self.car.setup(client_weak_self)
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.car.cleanup()
+
+        if self.display_manager is not None:
+            self.display_manager.cleanup()
+
+        self.set_synchronous_mode(False)
+        pygame.quit()
 
     def update_spectator_location(self):
         spectator = self.world.get_spectator()
@@ -315,36 +383,35 @@ class CarlaClient:
         settings.fixed_delta_seconds = 0.05
         self.world.apply_settings(settings)
 
-    def run_tick(self):
-        self.world.tick()
-        self.update_spectator_location()
-        self.capture = True
-
-    def cleanup(self):
-        self.set_synchronous_mode(False)
-        self.car.cleanup()
-        pygame.quit()
-
-        print('Cleaned Up!')
-
     def game_loop(self):
         pygame_clock = pygame.time.Clock()
 
         while True:
-            self.run_tick()
+            self.world.tick()
+            self.update_spectator_location()
             pygame_clock.tick_busy_loop(config.FRAME_RATE)
 
-            self.render()
-            pygame.display.update()
+            self.display_manager.render()
+
             pygame.event.pump()
+
+            # Check if the window is closed
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
+                    return
 
             if self.control():
                 return
 
 
 def main():
-    with CarlaClient() as client:
-        client.game_loop()
+    try:
+        with CarlaClient() as client:
+            client.game_loop()
+    finally:
+        pass
 
 
 if __name__ == '__main__':
