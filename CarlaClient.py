@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pygame
 import carla
 
@@ -26,11 +28,17 @@ class CarlaClient:
 
         self.__initialized = True
 
-        self.client = None
-        self.world = None
+        self.client = carla.Client('127.0.0.1', 2000)
+        assert self.client is not None
+        self.client.set_timeout(10.0)
 
-        self.car: EgoCar | None = None
+        self.world = self.client.get_world()
+        assert self.world is not None
+
         self.display_manager: DisplayManager | None = None
+        self.car: EgoCar | None = None
+
+        self.running = True
 
     """
     Manual Control
@@ -67,46 +75,6 @@ class CarlaClient:
     Game Loop
     """
 
-    def __enter__(self):
-        self.client = carla.Client('127.0.0.1', 2000)
-        assert self.client is not None
-        self.client.set_timeout(10.0)
-
-        """
-        World
-        """
-
-        self.world = self.client.get_world()
-        assert self.world is not None
-
-        self.set_synchronous_mode(True)
-
-        """
-        Display Manager
-        """
-
-        self.display_manager = DisplayManager(
-            grid_size=[config.DISPLAY_MANAGER_ROWS, config.DISPLAY_MANAGER_COLS],
-        )
-
-        """
-        Car
-        """
-
-        self.car = EgoCar()
-        self.car.setup()
-
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if self.car is not None:
-            self.car.cleanup()
-
-        if self.display_manager is not None:
-            self.display_manager.cleanup()
-
-        self.set_synchronous_mode(False)
-
     def update_spectator_location(self):
         spectator = self.world.get_spectator()
 
@@ -124,21 +92,40 @@ class CarlaClient:
             )
         )
 
-    def set_synchronous_mode(self, synchronous_mode):
+    def __enter__(self):
+        self.running = True
+
+        self.display_manager: DisplayManager = DisplayManager(
+            grid_size=[config.DISPLAY_MANAGER_ROWS, config.DISPLAY_MANAGER_COLS],
+        )
+
+        self.car: EgoCar = EgoCar()
+        self.car.setup()
+
         settings = self.world.get_settings()
-        settings.synchronous_mode = synchronous_mode
+        settings.synchronous_mode = True
         settings.fixed_delta_seconds = 0.05
         self.world.apply_settings(settings)
 
+        self.display_manager.render()
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.running = False
+        self.display_manager.cleanup()
+        self.car.cleanup()
+
     def game_loop(self):
-        pygame_clock = pygame.time.Clock()
+        clock = pygame.time.Clock()
+
+        self.car.actor.set_autopilot(True)
 
         while True:
-            self.world.tick()
             self.update_spectator_location()
-            pygame_clock.tick_busy_loop(config.FRAME_RATE)
-
             self.display_manager.render()
+            clock.tick_busy_loop(config.FRAME_RATE)
+            self.world.tick()
 
             pygame.event.pump()
 
@@ -151,3 +138,33 @@ class CarlaClient:
 
             if self.control():
                 return
+
+    async def game_loop2(self):
+        clock = pygame.time.Clock()
+
+        self.car.actor.set_autopilot(True)
+
+        while self.running:
+            # Run a tick and update the spectator
+            await asyncio.sleep(0.05)  # Adjust to match your desired frame rate
+            self.update_spectator_location()
+
+            self.display_manager.render()
+
+            pygame.event.pump()
+
+            # Check if the window is closed
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    return
+                elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
+                    self.running = False
+                    return
+
+            # if self.control():
+            #     self.running = False
+            #     break
+
+            # CARLA wait for the next tick
+            self.world.wait_for_tick()
