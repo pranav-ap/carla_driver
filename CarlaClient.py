@@ -136,8 +136,8 @@ class CarlaClient:
                 elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
                     return
 
-            if self.control():
-                return
+            # if self.control():
+            #     return
 
     async def game_loop2(self):
         clock = pygame.time.Clock()

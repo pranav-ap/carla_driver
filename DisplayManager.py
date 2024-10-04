@@ -43,7 +43,8 @@ class DisplayManager:
         new_image_height = int(original_image_height * scale_factor)
         print(f'New Image Dim : {new_image_width, new_image_height}')
 
-        window_size = (new_image_width * self.grid_size[1], new_image_height * self.grid_size[0])  # Adjusted for two rows
+        # window_size = (new_image_width * self.grid_size[1], new_image_height * self.grid_size[0])
+        window_size = (new_image_width * self.grid_size[1] * 2, new_image_height * self.grid_size[0])
 
         return window_size
 
