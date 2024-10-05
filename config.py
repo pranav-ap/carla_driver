@@ -9,9 +9,6 @@ class DriverConfig:
 
     FRAME_RATE = 20
 
-    DISPLAY_MANAGER_ROWS = 1
-    DISPLAY_MANAGER_COLS = 1
-
 
 config = DriverConfig()
 
