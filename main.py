@@ -5,7 +5,7 @@ from CarlaClient import CarlaClient
 def main():
     try:
         client = CarlaClient()
-        client.run()
+        client.start()
     finally:
         pass
 

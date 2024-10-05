@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import random
-import threading
-
 import carla
 import pygame
 
@@ -15,49 +13,55 @@ from FeatueMatcher import FeatureMatcher
 from ObjectDetector import ObjectDetector
 
 
-def visual_odometry(player: VisualOdometryPlayer, sensor_name: str, screen_name: str, current_color_image):
-    sensor = player.sensors[sensor_name]
-    sensor.frame_counter += 1
+class PlayerActions:
+    @staticmethod
+    def visual_odometry(player, sensor_name: str, screen_name: str, current_color_image):
+        sensor = player.sensors[sensor_name]
+        sensor.frame_counter += 1
 
-    if sensor.frame_counter % 3 == 0 and player.previous_image is not None and (player.feature_matcher_future is None or player.feature_matcher_future.done()):
-        player.feature_matcher_future = player.executor.submit(
-            player.feature_matcher.predict,
-            player.previous_image,
-            current_color_image
-        )
+        if sensor.frame_counter % 3 == 0 and player.previous_image is not None and (player.feature_matcher_future is None or player.feature_matcher_future.done()):
+            player.feature_matcher_future = player.executor.submit(
+                player.feature_matcher.predict,
+                player.previous_image,
+                current_color_image
+            )
 
-        sensor.frame_counter = 0
+            sensor.frame_counter = 0
 
-    if player.feature_matcher_future and player.feature_matcher_future.done():
-        try:
-            latest_matched_image = player.feature_matcher_future.result()
-            if latest_matched_image is not None:
-                screen = player.screens[screen_name]
-                screen.surface = pygame.surfarray.make_surface(latest_matched_image.swapaxes(0, 1))
+        if player.feature_matcher_future and player.feature_matcher_future.done():
+            try:
+                latest_matched_image = player.feature_matcher_future.result()
+                if latest_matched_image is not None:
+                    screen = player.screens[screen_name]
+                    screen.surface = pygame.surfarray.make_surface(latest_matched_image.swapaxes(0, 1))
 
-        except Exception as e:
-            print(f"Feature Matching Exception : {e}")
+            except Exception as e:
+                print(f"Feature Matching Exception : {e}")
 
-    player.previous_image = current_color_image
+        player.previous_image = current_color_image
 
+    @staticmethod
+    def object_detection(player: ObjectDetectionPlayer, sensor_name: str, screen_name: str, current_color_image):
+        sensor = player.sensors[sensor_name]
+        sensor.frame_counter += 1
 
-def object_detection(player: ObjectDetectionPlayer, sensor_name: str, screen_name: str, current_color_image):
-    sensor = player.sensors[sensor_name]
-    sensor.frame_counter += 1
+        if sensor.frame_counter % 5 == 0 and (player.object_detector_future is None or player.object_detector_future.done()):
+            player.object_detector_future = player.executor.submit(
+                player.object_detector.predict,
+                current_color_image
+            )
 
-    if sensor.frame_counter % 10 == 0 and (sensor.object_detector_future is None or sensor.object_detector_future.done()):
-        sensor.object_detector_future = player.executor.submit(player.object_detector.predict, current_color_image)
-        sensor.frame_counter = 0
+            sensor.frame_counter = 0
 
-    if sensor.object_detector_future and sensor.object_detector_future.done():
-        try:
-            result, latest_boxed_image = sensor.object_detector_future.result()
-            if latest_boxed_image is not None:
-                screen = player.screens[screen_name]
-                screen.surface = pygame.surfarray.make_surface(latest_boxed_image.swapaxes(0, 1))
+        if player.object_detector_future and player.object_detector_future.done():
+            try:
+                result, latest_boxed_image = player.object_detector_future.result()
+                if latest_boxed_image is not None:
+                    screen = player.screens[screen_name]
+                    screen.surface = pygame.surfarray.make_surface(latest_boxed_image.swapaxes(0, 1))
 
-        except Exception as e:
-            print(f"Object Detection Exception : {e}")
+            except Exception as e:
+                print(f"Object Detection Exception : {e}")
 
 
 class Player(ABC):
@@ -109,7 +113,7 @@ class Player(ABC):
             return actor
 
         print("Failed to spawn actor - all spawn points are occupied.")
-        return None
+        exit(1)
 
     @abstractmethod
     def _init_sensors(self):
@@ -126,9 +130,7 @@ class Player(ABC):
         for name, s in self.sensors.items():
             s.cleanup()
 
-    """
-    Act
-    """
+        self.executor.shutdown(wait=True)
 
 
 class VisualOdometryPlayer(Player):
@@ -169,12 +171,12 @@ class VisualOdometryPlayer(Player):
     def rgb_camera_front_callback(self, image):
         image = RGBCameraSensor.numpy_from_image(image)
         image = self.sensors['RGB Camera Front'].undistort_image(image)
-        visual_odometry(self, 'RGB Camera Front', 'VO Screen', image)
+        PlayerActions.visual_odometry(self, 'RGB Camera Front', 'VO Screen', image)
 
 
 class ObjectDetectionPlayer(Player):
     def __init__(self):
-        super().__init__(max_workers=1)
+        super().__init__(max_workers=3)
 
         self.object_detector = ObjectDetector()
         self.object_detector_future = None
@@ -192,7 +194,7 @@ class ObjectDetectionPlayer(Player):
                 carla.Rotation(yaw=0)
             ),
             attach_to=self.actor,
-            BUFFER_SIZE=1,
+            callback=self.rgb_camera_front_callback
         )
 
         return sensors
@@ -209,4 +211,7 @@ class ObjectDetectionPlayer(Player):
     def rgb_camera_front_callback(self, image):
         image = RGBCameraSensor.numpy_from_image(image)
         image = self.sensors['RGB Camera Front'].undistort_image(image)
-        object_detection(self, 'RGB Camera Front', 'OD Screen', image)
+        try:
+            PlayerActions.object_detection(self, 'RGB Camera Front', 'OD Screen', image)
+        except AttributeError as e:
+            print(f'OD attribute error again! {e}')

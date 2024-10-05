@@ -3,8 +3,8 @@ from __future__ import annotations
 import pygame
 import carla
 
-from Player import VisualOdometryPlayer
-from DisplayManager import VisualOdometryDisplayManager
+from Player import ObjectDetectionPlayer, VisualOdometryPlayer
+from DisplayManager import ObjectDetectionDisplayManager, VisualOdometryDisplayManager
 from KeyboardController import KeyboardController
 from config import config
 
@@ -60,7 +60,7 @@ class CarlaClient:
     Run Game Loop
     """
 
-    def run_vo(self):
+    def run_task(self, DisplayManager, Player):
         self.client = carla.Client('127.0.0.1', 2000)
         assert self.client is not None
         self.client.set_timeout(2.0)
@@ -68,8 +68,9 @@ class CarlaClient:
         self.world = self.client.get_world()
         assert self.world is not None
 
-        self.display_manager = VisualOdometryDisplayManager()
-        self.player = VisualOdometryPlayer()
+        self.display_manager = DisplayManager()
+        self.player = Player()
+        assert self.player is not None
         controller = KeyboardController(self.player)
 
         self.player.actor.set_autopilot(True)
@@ -92,5 +93,6 @@ class CarlaClient:
         self.player.cleanup()
         self.display_manager.cleanup()
 
-    def run(self):
-        self.run_vo()
+    def start(self):
+        # self.run_task(VisualOdometryDisplayManager, VisualOdometryPlayer)
+        self.run_task(ObjectDetectionDisplayManager, ObjectDetectionPlayer)
