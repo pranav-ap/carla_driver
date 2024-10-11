@@ -7,9 +7,6 @@ from pygame.locals import K_a, K_d, K_s, K_w
 
 
 class KeyboardController:
-    def __init__(self, player):
-        self.player = player
-
     def parse_events(self):
         pygame.event.pump()
 
@@ -33,19 +30,19 @@ class KeyboardController:
 
         return False
 
-    def control(self):
+    def control(self, player_actor):
         keys = pygame.key.get_pressed()
 
         if keys[K_ESCAPE]:
             return True
 
-        control = self.player.actor.get_control()
+        control = player_actor.get_control()
 
         self.handle_throttle(control, keys)
         self.handle_steering(control, keys)
         control.hand_brake = keys[K_SPACE]
 
-        self.player.actor.apply_control(control)
+        player_actor.apply_control(control)
 
         return False
 

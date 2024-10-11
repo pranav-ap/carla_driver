@@ -1,4 +1,5 @@
 from __future__ import annotations
+from utils.logger_setup import logger
 
 import random
 import carla
@@ -13,8 +14,6 @@ from Sensor import RGBCameraSensor
 from ClientDisplay import PyGameWidget
 from FeatueMatcher import FeatureMatcher
 from ObjectDetector import ObjectDetector
-from config import config
-from utils import put_text
 
 
 class PlayerActions:
@@ -82,7 +81,7 @@ class Player(ABC):
 
         return cls._instance
 
-    def __init__(self, max_workers):
+    def __init__(self):
         if self.__initialized:
             return
 
@@ -90,8 +89,6 @@ class Player(ABC):
 
         from CarlaClient import CarlaClient
         self.client: CarlaClient = CarlaClient()
-
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
         self.actor = self._init_actor()
         assert self.actor is not None
@@ -109,7 +106,7 @@ class Player(ABC):
         bp = world.get_blueprint_library().filter('vehicle.audi.tt')[0]
 
         if bp.has_attribute('color'):
-            color = random.choice(bp.get_attribute('color').recommended_values)
+            color = bp.get_attribute('color').recommended_values[0]
             bp.set_attribute('color', color)
 
         spawn_points = world.get_map().get_spawn_points()
@@ -120,7 +117,7 @@ class Player(ABC):
             actor = world.try_spawn_actor(bp, spawn_point)
             return actor
 
-        print("Failed to spawn actor - all spawn points are occupied.")
+        logger.warning("Failed to spawn actor - all spawn points are occupied.")
         exit(1)
 
     @abstractmethod
@@ -138,21 +135,22 @@ class Player(ABC):
         for name, s in self.sensors.items():
             s.cleanup()
 
-        self.executor.shutdown(wait=True)
-
 
 class VisualOdometryPlayer(Player):
     def __init__(self):
-        super().__init__(max_workers=1)
+        super().__init__()
+
+        self.executor = ThreadPoolExecutor(max_workers=1)
 
         self.feature_matcher = FeatureMatcher()
         self.feature_matcher_future = None
-        self.previous_image = None
 
-        self.current_pose_estimate = np.eye(4)
-        # Initialize lists to store errors for plotting
-        self.translation_errors = []
-        self.rotation_errors = []
+        self.current_pose_estimate = None
+        self.left_image = None
+        self.right_image = None
+
+        self.gt_path = []
+        self.estimated_path = []
 
     """
     Setup & Cleanup
@@ -180,12 +178,20 @@ class VisualOdometryPlayer(Player):
             span=(1, 2)  # row, col
         )
 
-        # widgets['VO Errors Screen'] = PyGameWidget(
-        #     grid_position=(0, 2),
-        #     span=(1, 1)
-        # )
-
         return widgets
+
+    def cleanup(self):
+        super().cleanup()
+
+        from utils import visualize_paths2
+        visualize_paths2(
+            self.gt_path,
+            self.estimated_path,
+            "Visual Odometry",
+            file_out=f"output/plot.html"
+        )
+
+        self.executor.shutdown(wait=False)
 
     """
     Sensor Callbacks
@@ -194,28 +200,110 @@ class VisualOdometryPlayer(Player):
     def rgb_camera_front_callback(self, image: carla.Image):
         frame_number = image.frame_number
         image = RGBCameraSensor.numpy_from_image(image)
-
-        self.visual_odometry('RGB Camera Front', image, frame_number)
-        #
-        # try:
-        #     self.visual_odometry('RGB Camera Front', image, frame_number)
-        # except Exception as e:
-        #     print(f"Feature Matching Exception : {e}")
+        try:
+            self.visual_odometry('RGB Camera Front', image, frame_number)
+        except AttributeError as e:
+            print(f'VO attribute error again! {e}')
 
     """
     Act
     """
 
+    def visual_odometry(self, sensor_name: str, image, frame_counter):
+        if self.left_image is None:
+            image = self.sensors[sensor_name].undistort_image(image)
+            self.left_image = image.copy()
+            return
+
+        if frame_counter % 2 == 0 and (self.feature_matcher_future is None or self.feature_matcher_future.done()):
+            image = self.sensors[sensor_name].undistort_image(image)
+            self.right_image = image.copy()
+
+            self.feature_matcher_future = self.executor.submit(
+                self.feature_matcher.predict_classical,
+                self.left_image,
+                image
+            )
+
+        if self.right_image is not None and self.feature_matcher_future is not None and self.feature_matcher_future.done():
+            self.left_image = self.right_image
+
+            package = self.feature_matcher_future.result()
+            matched_image, kp1, des1, q1, kp2, des2, q2, repeatability_score = package
+
+            K = self.sensors[sensor_name].K
+            self.visual_odometry_future_handling(q1, q2, K)
+            self.visual_odometry_future_ui_handling(matched_image, repeatability_score)
+
+    def visual_odometry_future_handling(self, q1, q2, K):
+        # Get the ground truth pose for comparison
+        gt_pose: carla.Transform = self.actor.get_transform()
+        gt_pose_homo_matrix = gt_pose.get_matrix()
+        gt_pose_homo_matrix = np.array(gt_pose_homo_matrix)
+
+        if self.current_pose_estimate is None:
+            self.current_pose_estimate = gt_pose_homo_matrix.copy()
+        else:
+            # Ensure enough matches exist
+            if len(q1) < 8 or len(q2) < 8:
+                print("Not enough matches to estimate pose.")
+                return None
+
+            # relative pose T (between current frame and previous frame)
+            T = self.estimate_relative_pose(q1, q2, K)
+            # Update current estimated pose
+            self.current_pose_estimate = np.matmul(self.current_pose_estimate, np.linalg.inv(T))
+
+        self.gt_path.append((gt_pose.location.x, gt_pose.location.z))
+        self.estimated_path.append((self.current_pose_estimate[0, 3], self.current_pose_estimate[2, 3]))
+
+        # Calculate the difference between ground truth and estimated pose
+        # translation_error, rotation_error = self.compute_pose_difference(gt_pose, self.current_pose_estimate)
+        # print(translation_error, rotation_error)
+
+        # return translation_error, rotation_error
+
+    def visual_odometry_future_ui_handling(self, matched_image, repeatability_score):
+        # matched_image = put_text(
+        #     matched_image,
+        #     org="bottom_left",
+        #     text=f"Repeatability : {repeatability_score:.4f}",
+        #          # f"Errors        : {translation_error, rotation_error}",
+        #     font_scale=0.7,
+        # )
+
+        print(f"repeatability_score : {repeatability_score}")
+
+        widget = self.widgets['VO Screen']
+        widget.surface = pygame.surfarray.make_surface(matched_image.swapaxes(0, 1))
+
     @staticmethod
     def compute_pose_difference(gt_transform: carla.Transform, estimated_pose: np.ndarray):
-        # Extract estimated translation and rotation from the 4x4 pose matrix
+        """
+        Computes the translation and rotation difference between ground truth and estimated poses.
+
+        Parameters:
+        - gt_transform (carla.Transform): The ground truth transform.
+        - estimated_pose (np.ndarray): The estimated pose in a 4x4 pose matrix.
+
+        Returns:
+        - translation_error (float): The translation error in the x-z direction.
+        - rotation_error (float): The rotation error in degrees.
+        """
+
+        # Extract estimated translation from the 4x4 pose matrix (focus on x and z)
         estimated_location = carla.Location(
             x=estimated_pose[0, 3],
             y=estimated_pose[1, 3],
             z=estimated_pose[2, 3]
         )
 
-        translation_error = gt_transform.location.distance(estimated_location)
+        # Extract x and z coordinates from both ground truth and estimated pose
+        gt_x, gt_z = gt_transform.location.x, gt_transform.location.z
+        est_x, est_z = estimated_location.x, estimated_location.z
+
+        # Calculate the distance in the x-z direction (horizontal plane you're interested in)
+        translation_error = ((gt_x - est_x) ** 2 + (gt_z - est_z) ** 2) ** 0.5
 
         """
         estimated_pose = np.array([
@@ -226,84 +314,34 @@ class VisualOdometryPlayer(Player):
         ])
         """
 
-        # To extract yaw (heading direction) from the estimated pose's rotation matrix
+        # Extract yaw (heading direction) from the estimated pose's rotation matrix
         estimated_yaw = np.degrees(np.arctan2(estimated_pose[1, 0], estimated_pose[0, 0]))
 
         # Compute the rotation error (difference in yaw angle)
         rotation_error = abs(gt_transform.rotation.yaw - estimated_yaw)
 
-        return translation_error, rotation_error
+        # Normalize the rotation error to stay within [-180, 180] degrees
+        if rotation_error > 180:
+            rotation_error = 360 - rotation_error
+
+            return translation_error, rotation_error
 
     @staticmethod
     def estimate_relative_pose(q1, q2, K) -> np.ndarray:
         """
         Computes the transformation matrix T
         that represents the relative movement (rotation R and translation t)
-        between the two frames
+        between the two frames using RANSAC filtering.
         """
+        E, inliers = cv2.findEssentialMat(q1, q2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+        _, R, t, mask = cv2.recoverPose(E, q1, q2, cameraMatrix=K, mask=inliers)
 
-        E, _ = cv2.findEssentialMat(q1, q2, K, threshold=1)
-        _, R, t, _ = cv2.recoverPose(E, q1, q2, cameraMatrix=K)
-        t = np.squeeze(t)
-
+        # Convert translation and rotation to homogeneous transformation matrix
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = R
-        T[:3, 3] = t
+        T[:3, 3] = np.squeeze(t)
 
         return T
-
-    def get_ground_truth_pose(self) -> carla.Transform:
-        transform = self.actor.get_transform()
-        return transform
-
-    def visual_odometry(self, sensor_name: str, image, frame_counter):
-        if frame_counter % 3 == 0 and self.previous_image is not None and (self.feature_matcher_future is None or self.feature_matcher_future.done()):
-            image = self.sensors[sensor_name].undistort_image(image)
-
-            self.feature_matcher_future = self.executor.submit(
-                self.feature_matcher.predict_flann,
-                self.previous_image,
-                image
-            )
-
-        if self.feature_matcher_future and self.feature_matcher_future.done():
-            package = self.feature_matcher_future.result()
-            matched_image, kp1, des1, q1, kp2, des2, q2, repeatability_score = package
-
-            K = self.sensors[sensor_name].K
-            self.visual_odometry_future_handling(q1, q2, K)
-            self.visual_odometry_future_ui_handling(matched_image, repeatability_score)
-
-        self.previous_image = image
-
-    def visual_odometry_future_handling(self, q1, q2, K):
-        # relative pose T (between current frame and previous frame)
-        relative_transform = self.estimate_relative_pose(q1, q2, K)
-
-        # Update current estimated pose
-        self.current_pose_estimate = np.matmul(
-            self.current_pose_estimate,
-            np.linalg.inv(relative_transform)
-        )
-
-        # Get the ground truth pose for comparison
-        gt_pose = self.get_ground_truth_pose()
-
-        # Calculate the difference between ground truth and estimated pose
-        translation_error, rotation_error = self.compute_pose_difference(gt_pose, self.current_pose_estimate)
-        # Store errors for plotting
-        self.translation_errors.append(translation_error)
-        self.rotation_errors.append(rotation_error)
-
-    def visual_odometry_future_ui_handling(self, matched_image, repeatability_score):
-        matched_image = put_text(
-            matched_image,
-            "bottom_left",
-            f"Repeatability : {repeatability_score:.4f}"
-        )
-
-        widget = self.widgets['VO Screen']
-        widget.surface = pygame.surfarray.make_surface(matched_image.swapaxes(0, 1))
 
 
 class ObjectDetectionPlayer(Player):
@@ -347,3 +385,6 @@ class ObjectDetectionPlayer(Player):
             PlayerActions.object_detection(self, 'RGB Camera Front', 'OD Screen', image)
         except AttributeError as e:
             print(f'OD attribute error again! {e}')
+
+
+

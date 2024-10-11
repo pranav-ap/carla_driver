@@ -1,4 +1,4 @@
-carla~=0.9.15
+carla
 opencv-python
 pygame
 numpy
@@ -7,4 +7,7 @@ shapely
 open3d
 matplotlib
 ultralytics
-
+scipy
+seaborn
+pandas
+loguru

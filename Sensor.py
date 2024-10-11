@@ -30,8 +30,8 @@ class RGBCameraSensor(Sensor):
         super().__init__(spawn_point, attach_to, callback)
 
         self.dist_coeffs = np.zeros((5, 1))
-        self.K = self._get_K()
-        self._calibrate()
+        self.K = self._calibrate()
+        self.actor.calibration = self.K
 
     def _init_actor(self, spawn_point, attach_to):
         sensor_bp = self.client.world.get_blueprint_library().find('sensor.camera.rgb')
@@ -44,9 +44,6 @@ class RGBCameraSensor(Sensor):
         return sensor
 
     def _calibrate(self):
-        self.actor.calibration = self.K
-
-    def _get_K(self):
         fov = int(self.actor.attributes['fov'])
         image_width = int(self.actor.attributes['image_size_x'])
         image_height = int(self.actor.attributes['image_size_y'])
@@ -62,17 +59,7 @@ class RGBCameraSensor(Sensor):
         return K
 
     def undistort_image(self, image):
-        # Get the dimensions of the image
-        # h, w = image.shape[:2]
-
-        # new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(self.actor.calibration, self.dist_coeffs, (w, h), 1, (w, h))
-        # undistorted_image = cv2.undistort(image, self.actor.calibration, self.dist_coeffs, None, new_camera_matrix)
         undistorted_image = cv2.undistort(image, self.actor.calibration, self.dist_coeffs)
-
-        # Crop the image if necessary
-        # x, y, w, h = roi
-        # undistorted_image = undistorted_image[y:y+h, x:x+w]
-
         return undistorted_image
 
     @staticmethod

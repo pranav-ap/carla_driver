@@ -32,7 +32,7 @@ class ClientDisplay:
 
         self._init_pygame()
 
-        self.grids_shape = grids_shape  # (1, 3) rows, cols
+        self.grids_shape = grids_shape  # rows, cols
 
         self.requires_resize = False
         self.single_grid_size = (config.IMAGE_WIDTH, config.IMAGE_HEIGHT)
