@@ -38,6 +38,9 @@ class CarlaClient:
         self.blueprint_library = self.world.get_blueprint_library()
         assert self.blueprint_library is not None
 
+        from KeyboardController import KeyboardController
+        self.controller = KeyboardController()
+
         self.player = None
         self.client_display = None
 
@@ -60,10 +63,10 @@ class CarlaClient:
             )
         )
 
-    def set_sync_mode(self, mode: bool):
+    def set_sync_mode(self, mode: bool, fixed_delta_seconds=0.05):
         settings = self.world.get_settings()
         settings.synchronous_mode = mode
-        settings.fixed_delta_seconds = 0.05
+        settings.fixed_delta_seconds = fixed_delta_seconds
         self.world.apply_settings(settings)
 
     def set_weather(self):
@@ -106,10 +109,8 @@ class CarlaClient:
         assert self.player is not None
         self.player.actor.set_autopilot(True)
 
-        from KeyboardController import KeyboardController
-        controller = KeyboardController(self.player)
-
-        self.set_sync_mode(True)
+        fixed_delta_seconds = 1 / config.FRAME_RATE
+        self.set_sync_mode(True, fixed_delta_seconds)
         clock = pygame.time.Clock()
 
         while True:
@@ -121,7 +122,7 @@ class CarlaClient:
             # clock.tick_busy_loop(config.FRAME_RATE)
             clock.tick(config.FRAME_RATE)
 
-            if controller.parse_events(self.player.actor):
+            if self.controller.parse_quit_events():
                 break
 
         self.set_sync_mode(False)

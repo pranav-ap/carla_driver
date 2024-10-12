@@ -12,11 +12,11 @@ class FeatureMatcher:
         super().__init__()
         self.lock = threading.Lock()
 
-        # from transformers import AutoImageProcessor, SuperPointForKeypointDetection
-        # self.processor = AutoImageProcessor.from_pretrained("magic-leap-community/superpoint")
-        # self.model = SuperPointForKeypointDetection.from_pretrained("magic-leap-community/superpoint")
-        # if torch.cuda.is_available():
-        #     self.model = self.model.cuda()
+        from transformers import AutoImageProcessor, SuperPointForKeypointDetection
+        self.processor = AutoImageProcessor.from_pretrained("magic-leap-community/superpoint")
+        self.model = SuperPointForKeypointDetection.from_pretrained("magic-leap-community/superpoint")
+        if torch.cuda.is_available():
+            self.model = self.model.cuda()
 
         self.orb = cv2.ORB_create()
         self.fast = cv2.FastFeatureDetector_create()
@@ -75,7 +75,7 @@ class FeatureMatcher:
                 continue
 
             m, n = x
-            if m.distance < 0.7 * n.distance:
+            if m.distance < 0.8 * n.distance:
                 matches.append(m)
 
         # Sort matches based on distance
@@ -155,14 +155,10 @@ class FeatureMatcher:
         q1 = np.float32([keypoints1[m.queryIdx].pt for m in matches])
         q2 = np.float32([keypoints2[m.trainIdx].pt for m in matches])
 
-        # Draw the top matches
-        num_matches_to_draw = min(10, len(matches))
-        some_matches = matches[:num_matches_to_draw]
-
         matched_image = draw_matches(
             prev_image_color, keypoints1,
             current_image_color, keypoints2,
-            some_matches
+            matches
         )
 
         repeatability_score = self.calculate_repeatability_score(matches, keypoints1, keypoints2)

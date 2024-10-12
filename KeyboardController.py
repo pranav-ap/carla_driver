@@ -7,7 +7,7 @@ from pygame.locals import K_a, K_d, K_s, K_w
 
 
 class KeyboardController:
-    def parse_events(self):
+    def parse_events(self, player_actor):
         pygame.event.pump()
 
         for event in pygame.event.get():
@@ -16,7 +16,7 @@ class KeyboardController:
             elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
                 return True
 
-        return self.control()
+        return self.control(player_actor)
 
     @staticmethod
     def parse_quit_events():

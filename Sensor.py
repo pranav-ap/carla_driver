@@ -34,7 +34,7 @@ class RGBCameraSensor(Sensor):
         self.actor.calibration = self.K
 
     def _init_actor(self, spawn_point, attach_to):
-        sensor_bp = self.client.world.get_blueprint_library().find('sensor.camera.rgb')
+        sensor_bp = self.client.blueprint_library.find('sensor.camera.rgb')
         sensor_bp.set_attribute('image_size_x', f'{config.IMAGE_WIDTH}')
         sensor_bp.set_attribute('image_size_y', f'{config.IMAGE_HEIGHT}')
         sensor_bp.set_attribute('fov', f'{config.IMAGE_FOV}')

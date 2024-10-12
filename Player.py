@@ -145,9 +145,9 @@ class VisualOdometryPlayer(Player):
         self.feature_matcher = FeatureMatcher()
         self.feature_matcher_future = None
 
-        self.current_pose_estimate = None
-        self.left_image = None
-        self.right_image = None
+        self.pose_estimate = self.actor.get_transform().get_matrix()
+        self.old_frame = None
+        self.new_frame = None
 
         self.gt_path = []
         self.estimated_path = []
@@ -200,34 +200,31 @@ class VisualOdometryPlayer(Player):
     def rgb_camera_front_callback(self, image: carla.Image):
         frame_number = image.frame_number
         image = RGBCameraSensor.numpy_from_image(image)
-        try:
-            self.visual_odometry('RGB Camera Front', image, frame_number)
-        except AttributeError as e:
-            print(f'VO attribute error again! {e}')
+        self.visual_odometry('RGB Camera Front', image, frame_number)
 
     """
     Act
     """
 
     def visual_odometry(self, sensor_name: str, image, frame_counter):
-        if self.left_image is None:
-            image = self.sensors[sensor_name].undistort_image(image)
-            self.left_image = image.copy()
+        image = self.sensors[sensor_name].undistort_image(image)
+
+        if self.old_frame is None:
+            self.old_frame = image.copy()
             return
 
         if frame_counter % 2 == 0 and (self.feature_matcher_future is None or self.feature_matcher_future.done()):
-            image = self.sensors[sensor_name].undistort_image(image)
-            self.right_image = image.copy()
+            self.new_frame = image.copy()
 
             self.feature_matcher_future = self.executor.submit(
-                self.feature_matcher.predict_classical,
-                self.left_image,
+                self.feature_matcher.predict_sp,
+                self.old_frame,
                 image
             )
 
-        if self.right_image is not None and self.feature_matcher_future is not None and self.feature_matcher_future.done():
-            self.left_image = self.right_image
+            self.old_frame = self.new_frame
 
+        if self.new_frame is not None and self.feature_matcher_future is not None and self.feature_matcher_future.done():
             package = self.feature_matcher_future.result()
             matched_image, kp1, des1, q1, kp2, des2, q2, repeatability_score = package
 
@@ -236,32 +233,20 @@ class VisualOdometryPlayer(Player):
             self.visual_odometry_future_ui_handling(matched_image, repeatability_score)
 
     def visual_odometry_future_handling(self, q1, q2, K):
-        # Get the ground truth pose for comparison
+        if len(q1) < 8 or len(q2) < 8:
+            print("Not enough matches to estimate pose.")
+            return None
+
         gt_pose: carla.Transform = self.actor.get_transform()
-        gt_pose_homo_matrix = gt_pose.get_matrix()
-        gt_pose_homo_matrix = np.array(gt_pose_homo_matrix)
+        T = self.estimate_T(q1, q2, K)
+        self.pose_estimate = self.pose_estimate @ np.linalg.inv(T)
 
-        if self.current_pose_estimate is None:
-            self.current_pose_estimate = gt_pose_homo_matrix.copy()
-        else:
-            # Ensure enough matches exist
-            if len(q1) < 8 or len(q2) < 8:
-                print("Not enough matches to estimate pose.")
-                return None
+        logger.debug(f'GT Pose : {gt_pose.location.x, gt_pose.location.y}')
+        logger.debug(f'CUR Pose : {self.pose_estimate[0, 3], self.pose_estimate[1, 3]}')
+        logger.debug(f'GT Rot : {gt_pose.rotation.yaw}')
 
-            # relative pose T (between current frame and previous frame)
-            T = self.estimate_relative_pose(q1, q2, K)
-            # Update current estimated pose
-            self.current_pose_estimate = np.matmul(self.current_pose_estimate, np.linalg.inv(T))
-
-        self.gt_path.append((gt_pose.location.x, gt_pose.location.z))
-        self.estimated_path.append((self.current_pose_estimate[0, 3], self.current_pose_estimate[2, 3]))
-
-        # Calculate the difference between ground truth and estimated pose
-        # translation_error, rotation_error = self.compute_pose_difference(gt_pose, self.current_pose_estimate)
-        # print(translation_error, rotation_error)
-
-        # return translation_error, rotation_error
+        self.gt_path.append((gt_pose.location.x, gt_pose.location.y))
+        self.estimated_path.append((self.pose_estimate[0, 3], self.pose_estimate[1, 3]))
 
     def visual_odometry_future_ui_handling(self, matched_image, repeatability_score):
         # matched_image = put_text(
@@ -278,56 +263,7 @@ class VisualOdometryPlayer(Player):
         widget.surface = pygame.surfarray.make_surface(matched_image.swapaxes(0, 1))
 
     @staticmethod
-    def compute_pose_difference(gt_transform: carla.Transform, estimated_pose: np.ndarray):
-        """
-        Computes the translation and rotation difference between ground truth and estimated poses.
-
-        Parameters:
-        - gt_transform (carla.Transform): The ground truth transform.
-        - estimated_pose (np.ndarray): The estimated pose in a 4x4 pose matrix.
-
-        Returns:
-        - translation_error (float): The translation error in the x-z direction.
-        - rotation_error (float): The rotation error in degrees.
-        """
-
-        # Extract estimated translation from the 4x4 pose matrix (focus on x and z)
-        estimated_location = carla.Location(
-            x=estimated_pose[0, 3],
-            y=estimated_pose[1, 3],
-            z=estimated_pose[2, 3]
-        )
-
-        # Extract x and z coordinates from both ground truth and estimated pose
-        gt_x, gt_z = gt_transform.location.x, gt_transform.location.z
-        est_x, est_z = estimated_location.x, estimated_location.z
-
-        # Calculate the distance in the x-z direction (horizontal plane you're interested in)
-        translation_error = ((gt_x - est_x) ** 2 + (gt_z - est_z) ** 2) ** 0.5
-
-        """
-        estimated_pose = np.array([
-            [r11, r12, r13, tx],
-            [r21, r22, r23, ty],
-            [r31, r32, r33, tz],
-            [0,   0,   0,   1]
-        ])
-        """
-
-        # Extract yaw (heading direction) from the estimated pose's rotation matrix
-        estimated_yaw = np.degrees(np.arctan2(estimated_pose[1, 0], estimated_pose[0, 0]))
-
-        # Compute the rotation error (difference in yaw angle)
-        rotation_error = abs(gt_transform.rotation.yaw - estimated_yaw)
-
-        # Normalize the rotation error to stay within [-180, 180] degrees
-        if rotation_error > 180:
-            rotation_error = 360 - rotation_error
-
-            return translation_error, rotation_error
-
-    @staticmethod
-    def estimate_relative_pose(q1, q2, K) -> np.ndarray:
+    def estimate_T(q1, q2, K) -> np.ndarray:
         """
         Computes the transformation matrix T
         that represents the relative movement (rotation R and translation t)
