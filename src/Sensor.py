@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import carla
 import cv2
 import numpy as np
 
 from abc import ABC, abstractmethod
-from config import config
+from .config import config
 
 
 class Sensor(ABC):
     def __init__(self, spawn_point, attach_to, callback):
-        from CarlaClient import CarlaClient
+        from src.CarlaClient import CarlaClient
         self.client: CarlaClient = CarlaClient()
 
         self.actor = self._init_actor(spawn_point, attach_to)
@@ -31,7 +32,7 @@ class RGBCameraSensor(Sensor):
 
         self.dist_coeffs = np.zeros((5, 1))
         self.K = self._calibrate()
-        self.actor.calibration = self.K
+        self.inv_K = np.linalg.inv(self.K)
 
     def _init_actor(self, spawn_point, attach_to):
         sensor_bp = self.client.blueprint_library.find('sensor.camera.rgb')
@@ -44,11 +45,15 @@ class RGBCameraSensor(Sensor):
         return sensor
 
     def _calibrate(self):
-        fov = int(self.actor.attributes['fov'])
+        fov = float(self.actor.attributes['fov'])
         image_width = int(self.actor.attributes['image_size_x'])
         image_height = int(self.actor.attributes['image_size_y'])
 
-        fx = fy = image_width / (2.0 * np.tan(fov * np.pi / 360.0))
+        # Calculate focal lengths based on FOV
+        fx = image_width / (2.0 * np.tan(np.radians(fov) / 2.0))
+        fy = image_height / (2.0 * np.tan(np.radians(fov) / 2.0))
+
+        # Principal points
         cx = image_width / 2.0
         cy = image_height / 2.0
 
@@ -59,15 +64,15 @@ class RGBCameraSensor(Sensor):
         return K
 
     def undistort_image(self, image):
-        undistorted_image = cv2.undistort(image, self.actor.calibration, self.dist_coeffs)
+        undistorted_image = cv2.undistort(image, self.K, self.dist_coeffs)
         return undistorted_image
 
     @staticmethod
-    def numpy_from_image(image):
+    def numpy_from_carla_image(image: carla.Image):
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
         # Drop alpha channel
         array = array[:, :, :3]
-        # Convert from BGRA to RGB
+        # Convert from BGR to RGB
         array = array[:, :, ::-1]
         return array

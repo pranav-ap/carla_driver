@@ -1,13 +1,13 @@
 from __future__ import annotations
-from utils.logger_setup import logger
 
 import random
 import pygame
 import carla
 
-from ClientDisplay import ClientDisplay
-from Player import VisualOdometryPlayer
-from config import config
+from .KeyboardController import KeyboardController
+from .ClientDisplay import ClientDisplay
+from .Player import VisualOdometryPlayer
+from .config import config
 
 
 class CarlaClient:
@@ -38,7 +38,6 @@ class CarlaClient:
         self.blueprint_library = self.world.get_blueprint_library()
         assert self.blueprint_library is not None
 
-        from KeyboardController import KeyboardController
         self.controller = KeyboardController()
 
         self.player = None
@@ -63,7 +62,7 @@ class CarlaClient:
             )
         )
 
-    def set_sync_mode(self, mode: bool, fixed_delta_seconds=0.05):
+    def set_sync_mode(self, mode: bool, fixed_delta_seconds=None):
         settings = self.world.get_settings()
         settings.synchronous_mode = mode
         settings.fixed_delta_seconds = fixed_delta_seconds
@@ -88,7 +87,7 @@ class CarlaClient:
 
         for i in range(count):
             vehicle_bp = random.choice(self.world.get_blueprint_library().filter('vehicle'))
-            npc = self.world.try_spawn_actor(vehicle_bp, random.choice(spawn_points))
+            self.world.try_spawn_actor(vehicle_bp, random.choice(spawn_points))
 
         for v in self.world.get_actors().filter('*vehicle*'):
             v.set_autopilot(True)
@@ -109,24 +108,31 @@ class CarlaClient:
         assert self.player is not None
         self.player.actor.set_autopilot(True)
 
+        self.client_display.render(self.player.widgets)
+        self.update_spectator_location()
+
         fixed_delta_seconds = 1 / config.FRAME_RATE
         self.set_sync_mode(True, fixed_delta_seconds)
+
+        self.set_weather()
+
         clock = pygame.time.Clock()
 
         while True:
             self.client_display.render(self.player.widgets)
             self.update_spectator_location()
 
+            self.player.act()
+
             self.world.tick()
             # Limit the game loop to run at X frames per second
-            # clock.tick_busy_loop(config.FRAME_RATE)
             clock.tick(config.FRAME_RATE)
 
-            if self.controller.parse_quit_events():
+            if self.controller.parse_events(self.player.actor):
                 break
 
         self.set_sync_mode(False)
 
         self.client_display.cleanup()
+        # self.player.visualize_estimate()
         self.player.cleanup()
-

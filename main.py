@@ -1,5 +1,5 @@
 from __future__ import annotations
-from CarlaClient import CarlaClient
+from src import CarlaClient
 
 
 def main():

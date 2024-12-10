@@ -3,7 +3,7 @@ from __future__ import annotations
 import pygame
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
-from config import config
+from .config import config
 
 
 @dataclass

@@ -8,7 +8,7 @@ class ObjectDetector(nn.Module):
     def __init__(self):
         super().__init__()
         self.lock = threading.Lock()
-        self.model = YOLO("models/yolo11n.pt")
+        self.model = YOLO("../models/yolo11n.pt")
 
         if torch.cuda.is_available():
             self.model = self.model.cuda()

@@ -1,0 +1,25 @@
+name: carla
+channels:
+    - defaults
+    - conda-forge
+dependencies:
+    - python=3.12
+    - pip
+    - numpy
+    - pandas
+    - matplotlib
+    - pillow
+    - seaborn
+    - loguru
+    - tqdm
+    - hydra-core
+    - jupyterlab
+    - jupyter
+    - lightning
+    - diffusers
+    - carla
+    - pygame
+    - ultralytics
+    - pip:
+        - opencv-python
+        - timm
